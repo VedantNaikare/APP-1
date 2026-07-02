@@ -1,191 +1,151 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import plotly.graph_objects as go
+from datetime import datetime
 
-# --- PAGE CONFIGURATION ---
+# --- Page Configuration & Styling ---
 st.set_page_config(
-    page_title="Global Stock Analytics",
+    page_title="Global Stock Dashboard",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- CUSTOM CSS FOR PREMIUM UI/UX ---
+# Custom CSS for modern UI/UX card styling
 st.markdown("""
     <style>
-        /* Main container styling */
-        .main {
-            background-color: #f8f9fa;
-        }
-        /* Custom metric card styling */
-        .metric-card {
-            background-color: #ffffff;
-            border-radius: 10px;
-            padding: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
-            border-left: 5px solid #1E3A8A;
-            margin-bottom: 20px;
-        }
-        .metric-title {
-            font-size: 0.9rem;
-            color: #6B7280;
-            text-transform: uppercase;
-            font-weight: 600;
-        }
-        .metric-value {
-            font-size: 2rem;
-            font-weight: 700;
-            color: #1F2937;
-        }
-        .metric-delta {
-            font-size: 1rem;
-            font-weight: 600;
-        }
+    .metric-card {
+        background-color: #f8f9fa;
+        padding: 15px;
+        border-radius: 10px;
+        border-left: 5px solid #4a90e2;
+        margin-bottom: 10px;
+    }
+    .stButton>button {
+        border-radius: 20px;
+    }
     </style>
-""", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
-# --- HEADER SECTION ---
-st.title("📈 Global Stock Market Analytics")
-st.markdown("Fetch real-time data, explore trends, and visualize global stock performances beautifully.")
+# --- Title and Header ---
+st.title("📈 Global Market Analytics Dashboard")
+st.caption("Real-time global market data retrieval powered by Yahoo Finance")
 st.markdown("---")
 
-# --- SIDEBAR & SUGGESTIONS ---
-st.sidebar.header("🔍 Stock Selection")
-
-# Curated stock suggestions with ticker mappings
-suggestions = {
-    "🇺🇸 US Tech Giants": {"Apple (AAPL)": "AAPL", "Microsoft (MSFT)": "MSFT", "NVIDIA (NVDA)": "NVDA", "Tesla (TSLA)": "TSLA"},
-    "🇮🇳 Indian Bluechips": {"Reliance Industries (RELIANCE.NS)": "RELIANCE.NS", "Tata Consultancy (TCS.NS)": "TCS.NS", "HDFC Bank (HDFCBANK.NS)": "HDFCBANK.NS"},
-    "🇪🇺 European Leaders": {"ASML Holding (ASML)": "ASML", "LVMH (MC.PA)": "MC.PA", "SAP (SAP)": "SAP"},
-    "🌏 Asian Markets": {"TSMC (TSM)": "TSM", "Sony Group (SONY)": "SONY", "Alibaba (BABA)": "BABA"}
+# --- Quick suggestions dictionary ---
+SUGGESTIONS = {
+    "Apple (USA)": "AAPL",
+    "NVIDIA (USA)": "NVDA",
+    "Reliance Industries (India)": "RELIANCE.NS",
+    "ASML Holding (Europe)": "ASML",
+    "Toyota Motor (Japan)": "7203.T",
+    "Sony Group (Japan)": "6758.T"
 }
 
-st.sidebar.subheader("Quick Suggestions")
-selected_ticker = ""
+# --- Sidebar Controls ---
+st.sidebar.header("🔍 Market Explorer")
 
-# Dropdown layout for quick suggestions
-category = st.sidebar.selectbox("Choose a Market Category", list(suggestions.keys()))
-suggestion_name = st.sidebar.selectbox("Select a Stock", list(suggestions[category].keys()))
-suggested_ticker = suggestions[category][suggestion_name]
+# Initialize session state for ticker input if it doesn't exist
+if "ticker_input" not in st.session_state:
+    st.session_state["ticker_input"] = "AAPL"
 
-# Text Input for custom tickers (defaults to the selected suggestion)
-ticker_input = st.sidebar.text_input(
-    "Or Enter Any Global Ticker Symbol (e.g., GOOG, AMZN, INFY.NS)", 
-    value=suggested_ticker
-).strip().upper()
+# Add shortcut suggestion buttons in sidebar
+st.sidebar.markdown("### Quick Recommendations")
+for label, sym in SUGGESTIONS.items():
+    if st.sidebar.button(f"🏢 {label} ({sym})", use_container_width=True):
+        st.session_state["ticker_input"] = sym
+        # Force a rerun to instantly update the text field value
+        st.rerun()
 
-# Time period selector
-st.sidebar.subheader("Timeframe Settings")
-time_period = st.sidebar.selectbox(
-    "Select Chart Time Period",
-    options=["1D", "5D", "1M", "6M", "1Y", "5Y", "MAX"],
-    index=4 # Defaults to 1Y
-)
+# Main Text Input for Ticker Search
+ticker_symbol = st.sidebar.text_input(
+    "Enter Global Ticker Symbol Manually", 
+    value=st.session_state["ticker_input"]
+).upper().strip()
 
-# Mapping periods to yfinance intervals
-interval_mapping = {
-    "1D": "5m", "5D": "15m", "1M": "1d", "6M": "1d", "1Y": "1d", "5Y": "1wk", "MAX": "1mo"
+# Period configuration mappings
+time_frames = {
+    "1 Day": {"period": "1d", "interval": "5m"},
+    "1 Week": {"period": "5d", "interval": "15m"},
+    "1 Month": {"period": "1mo", "interval": "1d"},
+    "6 Months": {"period": "6mo", "interval": "1d"},
+    "Year to Date": {"period": "ytd", "interval": "1d"},
+    "1 Year": {"period": "1y", "interval": "1d"},
+    "5 Years": {"period": "5y", "interval": "1wk"}
 }
 
-# --- DATA FETCHING ENGINE ---
-@st.cache_data(ttl=300) # Cache data for 5 minutes to boost performance
-def fetch_stock_data(ticker, period, interval):
+selected_tf = st.sidebar.selectbox("Select Time Horizon", list(time_frames.keys()), index=2)
+
+# --- Data Fetching Logic (Cached for Performance) ---
+@st.cache_data(ttl=60)  # Cache data for 1 minute
+def load_stock_data(ticker, period, interval):
     try:
         stock = yf.Ticker(ticker)
-        hist = stock.history(period=period.lower(), interval=interval)
+        hist = stock.history(period=period, interval=interval)
         info = stock.info
         return hist, info, None
     except Exception as e:
         return None, None, str(e)
 
-if ticker_input:
-    with st.spinner(f"Fetching data for {ticker_input}..."):
-        hist, info, error = fetch_stock_data(ticker_input, time_period, interval_mapping[time_period])
-    
-    if error or hist.empty:
-        st.error(f"❌ Could not retrieve data for **{ticker_input}**. Please verify the ticker symbol on Yahoo Finance.")
+if ticker_symbol:
+    with st.spinner(f"Fetching real-time data for {ticker_symbol}..."):
+        period_param = time_frames[selected_tf]["period"]
+        interval_param = time_frames[selected_tf]["interval"]
+        
+        hist_data, stock_info, error = load_stock_data(ticker_symbol, period_param, interval_param)
+
+    if error or hist_data is None or hist_data.empty:
+        st.error(f"❌ Could not retrieve data for ticker **'{ticker_symbol}'**. Please check the spelling or market availability.")
+        st.info("💡 Note: For international stocks, remember to add their market suffix (e.g., `.NS` for India, `.T` for Tokyo).")
     else:
-        # --- HERO METRICS DISPLAY ---
-        company_name = info.get('longName', ticker_input)
-        currency = info.get('currency', '$')
+        # --- UI Extraction and Calculations ---
+        company_name = stock_info.get('longName', ticker_symbol)
+        currency = stock_info.get('currency', '$')
         
-        # Calculate current price and changes
-        if len(hist) >= 2:
-            current_price = hist['Close'].iloc[-1]
-            previous_close = hist['Close'].iloc[-2] if time_period in ["1D", "5D"] else info.get('previousClose', hist['Close'].iloc[0])
-            price_change = current_price - previous_close
-            pct_change = (price_change / previous_close) * 100
-        else:
-            current_price = info.get('currentPrice', hist['Close'].iloc[-1] if not hist.empty else 0)
-            price_change, pct_change = 0.0, 0.0
+        # Get price deltas safely
+        current_price = hist_data['Close'].iloc[-1]
+        previous_close = stock_info.get('previousClose', hist_data['Close'].iloc[0])
+        price_change = current_price - previous_close
+        price_change_pct = (price_change / previous_close) * 100
 
-        delta_color = "#10B981" if price_change >= 0 else "#EF4444"
-        delta_sign = "+" if price_change >= 0 else ""
-
-        # UI Layout: Header & Real-time Metrics
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.subheader(f"{company_name} ({ticker_input})")
-            st.caption(f"Sector: {info.get('sector', 'N/A')} | Industry: {info.get('industry', 'N/A')} | Currency: {currency}")
+        # --- Main Layout View ---
+        col_header, col_meta = st.columns([3, 1])
+        with col_header:
+            st.subheader(f"{company_name} ({ticker_symbol})")
+            st.caption(f"Sector: {stock_info.get('sector', 'N/A')} | Industry: {stock_info.get('industry', 'N/A')}")
         
-        with col2:
-            # Custom styled metric card
-            st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-title">Current Price ({currency})</div>
-                    <div class="metric-value">{current_price:,.2f}</div>
-                    <div class="metric-delta" style="color: {delta_color};">
-                        {delta_sign}{price_change:,.2f} ({delta_sign}{pct_change:.2f}%)
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
-
-        # --- CHARTING SECTION ---
-        st.markdown(### `Interactive Trend Analysis ({time_period})`)
-        
-        # Plotly Line Chart Configuration
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=hist.index, 
-            y=hist['Close'], 
-            mode='lines', 
-            name='Close Price',
-            line=dict(color='#1E3A8A' if price_change >= 0 else '#DC2626', width=2.5),
-            hovertemplate='<b>Date:</b> %{x}<br><b>Price:</b> ' + currency + '%{y:,.2f}<extra></extra>'
-        ))
-
-        # Chart UI Tweaks
-        fig.update_layout(
-            template='plotly_white',
-            margin=dict(l=20, r=20, t=20, b=20),
-            height=450,
-            xaxis=dict(
-                showgrid=True,
-                gridcolor='#E5E7EB',
-                rangeslider=dict(visible=False)
-            ),
-            yaxis=dict(
-                showgrid=True, 
-                gridcolor='#E5E7EB',
-                title=f"Price ({currency})"
-            )
+        # Metric Cards Rows
+        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+        m_col1.metric(
+            label="Current Spot Price", 
+            value=f"{current_price:,.2f} {currency}", 
+            delta=f"{price_change:+.2f} ({price_change_pct:+.2f}%)"
         )
+        m_col2.metric(label="Period High", value=f"{hist_data['High'].max():,.2f} {currency}")
+        m_col3.metric(label="Period Low", value=f"{hist_data['Low'].min():,.2f} {currency}")
         
-        st.plotly_chart(fig, use_container_width=True)
+        # Format Market Cap cleanly
+        m_cap = stock_info.get('marketCap')
+        m_cap_str = f"{m_cap:,} {currency}" if m_cap else "N/A"
+        m_col4.metric(label="Market Cap", value=m_cap_str)
 
-        # --- ADDITIONAL INFORMATION TABS ---
-        tab1, tab2 = st.tabs(["📊 Key Fundamentals", "📝 Company Profile"])
+        # --- Charts Area ---
+        st.markdown(f"### Interactive Price Chart — `{selected_tf}` View")
         
-        with tab1:
-            f_col1, f_col2, f_col3, f_col4 = st.columns(4)
-            f_col1.metric("Day's High", f"{hist['High'].max():,.2f}" if not hist.empty else "N/A")
-            f_col2.metric("Day's Low", f"{hist['Low'].min():,.2f}" if not hist.empty else "N/A")
-            f_col3.metric("Market Cap", f"{info.get('marketCap', 0):,}" if info.get('marketCap') else "N/A")
-            f_col4.metric("PE Ratio", f"{info.get('trailingPE', 'N/A')}")
+        # Preparing chart data frame
+        chart_df = hist_data[['Close']].copy()
+        
+        # Clean index representation for cleaner visualization x-axis
+        if period_param in ['1d', '5d']:
+            chart_df.index = chart_df.index.strftime('%Y-%m-%d %H:%M')
+        else:
+            chart_df.index = chart_df.index.strftime('%Y-%m-%d')
+            
+        st.line_chart(chart_df, color="#29b5e8", use_container_width=True)
 
-        with tab2:
+        # --- Descriptive Profiles / Business Summary ---
+        with st.expander("📖 View Company Deep Dive & Business Summary"):
             st.markdown(f"**About {company_name}:**")
-            st.write(info.get('longBusinessSummary', "No business summary available for this asset."))
+            st.write(stock_info.get('longBusinessSummary', "No descriptive summary available for this specific asset listing."))
 else:
-    st.info("💡 Select a stock suggestion from the sidebar or type a valid Yahoo Finance ticker to begin.")
+    st.info("← Select a recommended stock or enter a valid ticker symbol in the sidebar menu to view analytics.")
